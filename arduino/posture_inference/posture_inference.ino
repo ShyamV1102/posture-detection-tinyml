@@ -1,5 +1,6 @@
-#include <Arduino_LSM9DS1.h> 
+#include <Arduino_LSM9DS1.h>
 #include <TensorFlowLite.h>
+#include <ArduinoBLE.h>
 #include "tensorflow/lite/micro/all_ops_resolver.h"
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/schema/schema_generated.h"
@@ -19,22 +20,90 @@ uint8_t tensor_arena[kTensorArenaSize];
 const int WINDOW_SIZE = 100;  // 2s at 50Hz
 // const int FEATURE_DIM = 14;   // 6*2 (mean+std) + 2 (acc_mag) + 2 (gyro_mag) - should match your model
 
+// ***** NEW: model output config *****
+// 8 outputs = posture+activity classes as described above
+const int NUM_CLASSES = 8;
+
+// ***** NEW: BLE definitions *****
+BLEService postureService("12345678-1234-5678-1234-56789abcdef0");
+BLEStringCharacteristic postureChar(
+  "12345678-1234-5678-1234-56789abcdef1",
+  BLERead | BLENotify,
+  32  // max length of "jogging,good" etc.
+);
+
 float ax_buf[WINDOW_SIZE], ay_buf[WINDOW_SIZE], az_buf[WINDOW_SIZE];
 float gx_buf[WINDOW_SIZE], gy_buf[WINDOW_SIZE], gz_buf[WINDOW_SIZE];
 int buf_idx = 0;
 
+// void setup() {
+//   Serial.begin(115200);
+//   delay(2000);  // Give time for Serial to stabilize
+
+//   Serial.println("=== Posture Detector Starting ===");
+
+//   Serial.println("Initializing IMU...");
+//   if (!IMU.begin()) {
+//     Serial.println("ERROR: Failed to initialize IMU!");
+//     while (1) {
+//       delay(1000);
+//     }
+//   }
+//   Serial.println("IMU OK");
+
+//   Serial.println("Loading TFLite model...");
+//   model = tflite::GetModel(posture_model_tflite);
+//   if (model->version() != TFLITE_SCHEMA_VERSION) {
+//     Serial.println("ERROR: Model schema mismatch!");
+//     Serial.print("Model version: ");
+//     Serial.println(model->version());
+//     Serial.print("Expected: ");
+//     Serial.println(TFLITE_SCHEMA_VERSION);
+//     while (1) {
+//       delay(1000);
+//     }
+//   }
+//   Serial.println("Model loaded OK");
+
+//   Serial.println("Setting up interpreter...");
+//   static tflite::AllOpsResolver resolver;
+//   static tflite::MicroInterpreter static_interpreter(
+//       model, resolver, tensor_arena, kTensorArenaSize);
+//   interpreter = &static_interpreter;
+
+//   Serial.println("Allocating tensors...");
+//   TfLiteStatus allocate_status = interpreter->AllocateTensors();
+//   if (allocate_status != kTfLiteOk) {
+//     Serial.println("ERROR: AllocateTensors() failed!");
+//     Serial.print("Status code: ");
+//     Serial.println(allocate_status);
+//     while (1) {
+//       delay(1000);
+//     }
+//   }
+//   Serial.println("Tensors allocated OK");
+
+//   input = interpreter->input(0);
+//   output = interpreter->output(0);
+
+//   Serial.print("Input shape: ");
+//   Serial.println(input->dims->data[1]);
+//   Serial.print("Expected features: ");
+//   Serial.println(FEATURE_DIM);
+
+//   Serial.println("\n=== Setup Complete ===");
+//   Serial.println("Collecting data...\n");
+// }
 void setup() {
   Serial.begin(115200);
-  delay(2000);  // Give time for Serial to stabilize
-  
+  delay(2000);
+
   Serial.println("=== Posture Detector Starting ===");
 
   Serial.println("Initializing IMU...");
   if (!IMU.begin()) {
     Serial.println("ERROR: Failed to initialize IMU!");
-    while (1) {
-      delay(1000);
-    }
+    while (1) { delay(1000); }
   }
   Serial.println("IMU OK");
 
@@ -42,31 +111,21 @@ void setup() {
   model = tflite::GetModel(posture_model_tflite);
   if (model->version() != TFLITE_SCHEMA_VERSION) {
     Serial.println("ERROR: Model schema mismatch!");
-    Serial.print("Model version: ");
-    Serial.println(model->version());
-    Serial.print("Expected: ");
-    Serial.println(TFLITE_SCHEMA_VERSION);
-    while (1) {
-      delay(1000);
-    }
+    while (1) { delay(1000); }
   }
   Serial.println("Model loaded OK");
 
   Serial.println("Setting up interpreter...");
   static tflite::AllOpsResolver resolver;
   static tflite::MicroInterpreter static_interpreter(
-      model, resolver, tensor_arena, kTensorArenaSize);
+    model, resolver, tensor_arena, kTensorArenaSize);
   interpreter = &static_interpreter;
 
   Serial.println("Allocating tensors...");
   TfLiteStatus allocate_status = interpreter->AllocateTensors();
   if (allocate_status != kTfLiteOk) {
     Serial.println("ERROR: AllocateTensors() failed!");
-    Serial.print("Status code: ");
-    Serial.println(allocate_status);
-    while (1) {
-      delay(1000);
-    }
+    while (1) { delay(1000); }
   }
   Serial.println("Tensors allocated OK");
 
@@ -78,44 +137,32 @@ void setup() {
   Serial.print("Expected features: ");
   Serial.println(FEATURE_DIM);
 
+  // ***** NEW: BLE init *****
+  Serial.println("Starting BLE...");
+  if (!BLE.begin()) {
+    Serial.println("ERROR: starting BLE failed!");
+    while (1) { delay(1000); }
+  }
+
+  BLE.setDeviceName("PostureBand");
+  BLE.setLocalName("PostureBand");
+  BLE.setAdvertisedService(postureService);
+
+  postureService.addCharacteristic(postureChar);
+  BLE.addService(postureService);
+
+  postureChar.writeValue("booting");
+  BLE.advertise();
+  Serial.println("BLE advertising started");
+
   Serial.println("\n=== Setup Complete ===");
   Serial.println("Collecting data...\n");
 }
 
-// void setup() {
-//   Serial.begin(115200);
-//   while (!Serial && millis() < 3000);  // Wait 3s max for serial
-
-//   if (!IMU.begin()) {
-//     Serial.println("Failed to initialize IMU!");
-//     while (1);
-//   }
-
-//   // Load TFLite model
-//   model = tflite::GetModel(posture_model_tflite);
-//   if (model->version() != TFLITE_SCHEMA_VERSION) {
-//     Serial.println("Model schema mismatch!");
-//     while (1);
-//   }
-
-//   static tflite::AllOpsResolver resolver;
-//   static tflite::MicroInterpreter static_interpreter(
-//       model, resolver, tensor_arena, kTensorArenaSize);
-//   interpreter = &static_interpreter;
-
-//   if (interpreter->AllocateTensors() != kTfLiteOk) {
-//     Serial.println("AllocateTensors() failed");
-//     while (1);
-//   }
-
-//   input = interpreter->input(0);
-//   output = interpreter->output(0);
-
-//   Serial.println("Posture detector ready!");
-//   Serial.println("Collecting data...");
-// }
 
 void loop() {
+  BLE.poll();
+
   if (IMU.accelerationAvailable() && IMU.gyroscopeAvailable()) {
     float ax, ay, az, gx, gy, gz;
     IMU.readAcceleration(ax, ay, az);
@@ -140,21 +187,95 @@ void loop() {
         input->data.f[i] = features[i];
       }
 
+      // if (interpreter->Invoke() != kTfLiteOk) {
+      //   Serial.println("Invoke failed");
+      //   return;
+      // }
+
+      // float bad_posture_prob = output->data.f[0];
+
+      // Serial.print("Bad posture probability: ");
+      // Serial.println(bad_posture_prob);
+
+      // if (bad_posture_prob > 0.7) {
+      //   Serial.println("⚠️  SLOUCHING DETECTED!");
+      // } else {
+      //   Serial.println("✓ Good posture");
+      // }
+
+      // new code
       if (interpreter->Invoke() != kTfLiteOk) {
         Serial.println("Invoke failed");
         return;
       }
 
-      float bad_posture_prob = output->data.f[0];
-      
-      Serial.print("Bad posture probability: ");
-      Serial.println(bad_posture_prob);
-
-      if (bad_posture_prob > 0.7) {
-        Serial.println("⚠️  SLOUCHING DETECTED!");
-      } else {
-        Serial.println("✓ Good posture");
+      // ----- NEW: find best class -----
+      int best_idx = 0;
+      float best_prob = output->data.f[0];
+      for (int i = 1; i < NUM_CLASSES; i++) {
+        float p = output->data.f[i];
+        if (p > best_prob) {
+          best_prob = p;
+          best_idx = i;
+        }
       }
+
+      const char* activity_str = "unknown";
+      const char* posture_str = "unknown";
+
+      // Map class index to (activity, posture)
+      switch (best_idx) {
+        case 0:
+          activity_str = "sitting";
+          posture_str = "bad";
+          break;
+        case 1:
+          activity_str = "sitting";
+          posture_str = "good";
+          break;
+        case 2:
+          activity_str = "standing";
+          posture_str = "bad";
+          break;
+        case 3:
+          activity_str = "standing";
+          posture_str = "good";
+          break;
+        case 4:
+          activity_str = "walking";
+          posture_str = "bad";
+          break;
+        case 5:
+          activity_str = "walking";
+          posture_str = "good";
+          break;
+        case 6:
+          activity_str = "jogging";
+          posture_str = "bad";
+          break;
+        case 7:
+          activity_str = "jogging";
+          posture_str = "good";
+          break;
+        default:
+          break;
+      }
+
+      Serial.print("Class idx: ");
+      Serial.print(best_idx);
+      Serial.print("  prob: ");
+      Serial.println(best_prob);
+
+      Serial.print("Activity: ");
+      Serial.print(activity_str);
+      Serial.print(" | Posture: ");
+      Serial.println(posture_str);
+
+      if (BLE.connected()) {
+        String msg = String(activity_str) + "," + posture_str;  // e.g. "walking,bad"
+        postureChar.writeValue(msg);
+      }
+      // new code end
 
       buf_idx = WINDOW_SIZE / 2;  // 50% overlap
       // Shift buffer
@@ -188,22 +309,22 @@ void compute_features(float* features) {
   // Acc and gyro magnitude (4 features: acc_mean, acc_std, gyro_mean, gyro_std)
   float acc_mag_sum = 0, acc_mag_sq_sum = 0;
   float gyro_mag_sum = 0, gyro_mag_sq_sum = 0;
-  
+
   for (int i = 0; i < WINDOW_SIZE; i++) {
-    float acc_mag = sqrt(ax_buf[i]*ax_buf[i] + ay_buf[i]*ay_buf[i] + az_buf[i]*az_buf[i]);
-    float gyro_mag = sqrt(gx_buf[i]*gx_buf[i] + gy_buf[i]*gy_buf[i] + gz_buf[i]*gz_buf[i]);
+    float acc_mag = sqrt(ax_buf[i] * ax_buf[i] + ay_buf[i] * ay_buf[i] + az_buf[i] * az_buf[i]);
+    float gyro_mag = sqrt(gx_buf[i] * gx_buf[i] + gy_buf[i] * gy_buf[i] + gz_buf[i] * gz_buf[i]);
     acc_mag_sum += acc_mag;
     acc_mag_sq_sum += acc_mag * acc_mag;
     gyro_mag_sum += gyro_mag;
     gyro_mag_sq_sum += gyro_mag * gyro_mag;
   }
-  
+
   float acc_mag_mean = acc_mag_sum / WINDOW_SIZE;
   float gyro_mag_mean = gyro_mag_sum / WINDOW_SIZE;
-  
+
   features[12] = acc_mag_mean;
   features[13] = sqrt(acc_mag_sq_sum / WINDOW_SIZE - acc_mag_mean * acc_mag_mean);
-  features[14] = gyro_mag_mean;  // Added
+  features[14] = gyro_mag_mean;                                                        // Added
   features[15] = sqrt(gyro_mag_sq_sum / WINDOW_SIZE - gyro_mag_mean * gyro_mag_mean);  // Added
 
   // Apply scaling (normalize)
