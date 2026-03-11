@@ -28,4 +28,3 @@ node_modules/
 dist/
 .vercel/
 .env
-src/supabase.js
